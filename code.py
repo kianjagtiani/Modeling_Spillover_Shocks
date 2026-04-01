@@ -1,3 +1,5 @@
+# used some BTC dataset from GitHub
+
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
