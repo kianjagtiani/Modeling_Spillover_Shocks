@@ -183,6 +183,59 @@ def cross_asset_features(daily_data: dict[str, pd.DataFrame]) -> pd.DataFrame:
     return pd.DataFrame(frames)
 
 
+def traditional_asset_features(trad: pd.DataFrame) -> pd.DataFrame:
+    """
+    Features derived from traditional financial assets.
+    All lagged by 1 day to avoid lookahead.
+
+    VIX:   level, 5d change, spike dummy (>30), rolling 5d avg
+    SP500: log-return, 5d realized vol, rolling corr with BTC
+    Gold:  log-return, 5d vol
+    DXY:   log-return, 5d vol (negative predictor of BTC vol)
+    TNX:   yield level, 5d change (rate shock signal)
+    """
+    df = trad.copy().sort_index()
+    out = pd.DataFrame(index=df.index)
+
+    # VIX — most important traditional predictor
+    if "vix" in df.columns:
+        out["vix_level"]    = df["vix"].shift(1)
+        out["vix_5d_avg"]   = df["vix"].shift(1).rolling(5).mean()
+        out["vix_5d_chg"]   = df["vix"].diff(5).shift(1)
+        out["vix_spike"]    = (df["vix"].shift(1) > 30).astype(int)
+        out["log_vix"]      = np.log(df["vix"].clip(lower=1)).shift(1)
+
+    # S&P 500
+    if "sp500" in df.columns:
+        sp_ret = np.log(df["sp500"] / df["sp500"].shift(1))
+        out["sp500_ret_1d"]  = sp_ret.shift(1)
+        out["sp500_vol_5d"]  = sp_ret.rolling(5).std().shift(1) * np.sqrt(252)
+        out["sp500_vol_22d"] = sp_ret.rolling(22).std().shift(1) * np.sqrt(252)
+        # Range-based vol (Parkinson) — available even on non-trading days
+        if "sp500_high" in df.columns and "sp500_low" in df.columns:
+            park = np.sqrt(np.log(df["sp500_high"] / df["sp500_low"]) ** 2 / (4 * np.log(2)))
+            out["sp500_park_vol"] = park.shift(1)
+
+    # Gold
+    if "gold" in df.columns:
+        gold_ret = np.log(df["gold"] / df["gold"].shift(1))
+        out["gold_ret_1d"]  = gold_ret.shift(1)
+        out["gold_vol_5d"]  = gold_ret.rolling(5).std().shift(1) * np.sqrt(252)
+
+    # DXY — dollar strength (negative predictor)
+    if "dxy" in df.columns:
+        dxy_ret = np.log(df["dxy"] / df["dxy"].shift(1))
+        out["dxy_ret_1d"]  = dxy_ret.shift(1)
+        out["dxy_vol_5d"]  = dxy_ret.rolling(5).std().shift(1) * np.sqrt(252)
+
+    # 10Y yield — rate shock signal
+    if "tnx" in df.columns:
+        out["tnx_level"]  = df["tnx"].shift(1)
+        out["tnx_5d_chg"] = df["tnx"].diff(5).shift(1)
+
+    return out
+
+
 def volume_features(df_1d: pd.DataFrame) -> pd.DataFrame:
     """Relative volume and quote volume vs rolling baseline."""
     df = df_1d.set_index("timestamp").copy()
@@ -317,6 +370,12 @@ def build_feature_matrix(start: str = "2019-01-01") -> pd.DataFrame:
     vov = vol_of_vol(log_rv)
     pct = rv_percentile(log_rv)
 
+    # Realized semi-variances (upside / downside decomposition)
+    print("  Computing realized semi-variances...")
+    from optimize import realized_semi_variances
+    semi_var = realized_semi_variances(btc_5m)
+    semi_var.index = pd.to_datetime(semi_var.index, utc=True)
+
     # Garman-Klass (daily fallback, use as additional feature)
     gk = garman_klass(btc_1d.set_index("timestamp"))
     log_gk = np.log(gk.clip(lower=1e-8)).shift(1).rename("log_rv_gk_lag1")
@@ -330,6 +389,16 @@ def build_feature_matrix(start: str = "2019-01-01") -> pd.DataFrame:
     print("  Building seasonality features...")
     season = seasonality_features(pd.DatetimeIndex(log_rv.index))
 
+    # Traditional assets (VIX, S&P 500, Gold, DXY, 10Y)
+    trad_path = RAW_DIR / "traditional_assets.parquet"
+    if trad_path.exists():
+        print("  Building traditional asset features...")
+        trad_raw = pd.read_parquet(trad_path)
+        trad_raw.index = pd.to_datetime(trad_raw.index, utc=True)
+        trad_feat = traditional_asset_features(trad_raw)
+    else:
+        trad_feat = pd.DataFrame()
+
     # Sentiment
     fg_path = RAW_DIR / "fear_greed.parquet"
     if fg_path.exists():
@@ -342,6 +411,7 @@ def build_feature_matrix(start: str = "2019-01-01") -> pd.DataFrame:
     # Assemble — align everything to daily UTC index
     frames = [log_rv, har, vov, pct,
               jumps.shift(1),   # shift jumps: use yesterday's jumps to predict today
+              semi_var,
               log_gk, season]
 
     df = pd.concat(frames, axis=1)
@@ -352,6 +422,10 @@ def build_feature_matrix(start: str = "2019-01-01") -> pd.DataFrame:
         df = df.join(vol_feat, how="left")
     if not fg_feat.empty:
         df = df.join(fg_feat, how="left")
+    if not trad_feat.empty:
+        # Reindex to BTC's daily index then forward-fill weekends/holidays
+        trad_feat = trad_feat.reindex(df.index).ffill()
+        df = df.join(trad_feat, how="left")
 
     # Filter date range and drop warmup rows (need 22 days for monthly lag)
     start_ts = pd.Timestamp(start, tz="UTC")

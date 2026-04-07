@@ -21,6 +21,8 @@ import pandas as pd
 from data_ingestion import ingest_all
 from features import build_feature_matrix
 from models import HARModel, HARLassoModel, XGBoostModel, LGBMModel, HARLGBMHybrid, METRICS
+from optimize import HARLGBMTuned, StackingEnsemble
+from lstm_model import HARLSTMHybrid
 from validation import (
     expanding_window_splits,
     sliding_window_splits,
@@ -86,12 +88,26 @@ def run_pipeline(
         print(f"Total walk-forward splits: {len(splits)}\n")
 
     # ── 4. Models ──────────────────────────────────────────────────────────────
-    model_factories = {
-        "HAR-RV-SJ":       lambda: HARModel(),
-        "HAR-Lasso":       lambda: HARLassoModel(),
-        "XGBoost":         lambda: XGBoostModel(),
-        "LightGBM":        lambda: LGBMModel(),
+    tuned_model = HARLGBMTuned(n_trials=60)  # shared instance so tuning happens once
+
+    base_factories = {
+        "HAR-RV-SJ": lambda: HARModel(),
+        "HAR-Lasso": lambda: HARLassoModel(),
+        "LightGBM":  lambda: LGBMModel(),
         "HAR-LGBM Hybrid": lambda: HARLGBMHybrid(),
+    }
+
+    model_factories = {
+        "HAR-RV-SJ":         lambda: HARModel(),
+        "HAR-Lasso":         lambda: HARLassoModel(),
+        "XGBoost":           lambda: XGBoostModel(),
+        "LightGBM":          lambda: LGBMModel(),
+        "HAR-LGBM Hybrid":   lambda: HARLGBMHybrid(),
+        "HAR-LGBM Tuned":    lambda: tuned_model,
+        "Stacking Ensemble": lambda: StackingEnsemble(base_factories),
+        "HAR-LSTM Hybrid":   lambda: HARLSTMHybrid(seq_len=22, hidden_size=64,
+                                                    num_layers=2, max_epochs=80,
+                                                    patience=10),
     }
 
     all_results = []
