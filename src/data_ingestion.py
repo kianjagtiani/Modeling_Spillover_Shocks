@@ -137,6 +137,51 @@ def fetch_and_save(
     return out_path
 
 
+TRAD_SYMBOLS = {
+    "^VIX":      "vix",        # CBOE Volatility Index — strongest validated predictor
+    "^GSPC":     "sp500",      # S&P 500
+    "GLD":       "gold",       # Gold ETF
+    "DX-Y.NYB":  "dxy",        # US Dollar Index
+    "^TNX":      "tnx",        # 10-Year Treasury yield
+}
+
+
+def fetch_traditional_assets(start: str = "2021-01-01") -> pd.DataFrame:
+    """
+    Fetch daily OHLCV for traditional financial assets via yfinance.
+    Returns a single DataFrame indexed by UTC date with all assets.
+    """
+    import yfinance as yf
+
+    frames = {}
+    for sym, name in TRAD_SYMBOLS.items():
+        try:
+            df = yf.download(sym, start=start, auto_adjust=True, progress=False)
+            if df.empty:
+                _log(f"  [trad] WARNING: no data for {sym}")
+                continue
+            # Flatten MultiIndex columns if present
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            close = df["Close"].rename(name)
+            high  = df["High"].rename(f"{name}_high")
+            low   = df["Low"].rename(f"{name}_low")
+            frames[name]            = close
+            frames[f"{name}_high"]  = high
+            frames[f"{name}_low"]   = low
+            _log(f"  [trad] {name}: {len(df)} rows")
+        except Exception as e:
+            _log(f"  [trad] ERROR {sym}: {e}")
+
+    if not frames:
+        return pd.DataFrame()
+
+    out = pd.concat(frames, axis=1)
+    out.index = pd.to_datetime(out.index, utc=True)
+    out = out.sort_index()
+    return out
+
+
 def fetch_fear_greed(start: str = "2021-01-01") -> pd.DataFrame:
     url = "https://api.alternative.me/fng/?limit=0&format=json"
     resp = requests.get(url, timeout=10)
@@ -180,6 +225,14 @@ def ingest_all(start: str = "2021-01-01") -> None:
                 fut.result()
             except Exception as e:
                 _log(f"  ERROR {sym} 5m: {e}")
+
+    _log("  Fetching traditional assets (VIX, S&P 500, Gold, DXY, 10Y)...")
+    try:
+        trad = fetch_traditional_assets(start=start)
+        trad.to_parquet(RAW_DIR / "traditional_assets.parquet")
+        _log(f"  Saved {len(trad):,} rows → traditional_assets.parquet")
+    except Exception as e:
+        _log(f"  ERROR traditional assets: {e}")
 
     _log("  Fetching Fear & Greed Index...")
     try:
