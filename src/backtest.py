@@ -281,3 +281,199 @@ def run(model_name: str = "HAR-LGBM Hybrid"):
 
 if __name__ == "__main__":
     run()
+
+
+# ── Extended Strategies (5-8) ─────────────────────────────────────────────────
+
+def run_extended_backtest(
+    btc_returns: pd.Series,
+    predicted_log_rv: pd.Series,
+    target_vol: float = 0.02,
+    max_position: float = 1.5,
+    min_position: float = 0.1,
+    tx_cost: float = 0.001,
+) -> tuple[dict, pd.DataFrame]:
+    """
+    Run all 8 strategies. Strategies 1-4 from run_backtest(); 5-8 added here.
+    Returns (all_metrics_dict, positions_df).
+    """
+    idx     = btc_returns.index.intersection(predicted_log_rv.index)
+    ret     = btc_returns.loc[idx]
+    pred_rv = np.exp(predicted_log_rv.loc[idx]) / np.sqrt(365)   # daily vol
+
+    # Get strategies 1-4 from existing function
+    results_1_4, pos_iv, pos_rf, pos_combo = run_backtest(
+        btc_returns, predicted_log_rv,
+        target_vol=target_vol, max_position=max_position,
+        min_position=min_position, tx_cost=tx_cost,
+    )
+    all_results = dict(results_1_4)
+
+    # ── Strategy 5: Vol Carry ─────────────────────────────────────────────────
+    # Trade the vol risk premium: if pred_vol << recent_rv, market is over-pricing
+    # vol → go more aggressively long. If pred_vol >> recent_rv, reduce.
+    rolling_rv = pred_rv.rolling(20).mean().shift(1).fillna(pred_rv.mean())
+    vol_carry  = (rolling_rv / pred_rv.replace(0, np.nan)).clip(min_position, max_position)
+    vol_carry  = vol_carry.shift(1).fillna(1.0)
+    trades_vc  = vol_carry.diff().abs().fillna(0)
+    carry_ret  = vol_carry * ret - trades_vc * tx_cost
+    all_results["Vol Carry"] = compute_metrics(carry_ret, "Vol Carry")
+
+    # ── Strategy 6: Vol Breakout ──────────────────────────────────────────────
+    # After vol compression (pred < 60-day rolling percentile), prepare for vol expansion
+    rv_pct60 = pred_rv.rolling(60).rank(pct=True)
+    compression_score = pred_rv / pred_rv.rolling(60).mean().replace(0, np.nan)
+    # Consecutive days of compression
+    is_compressed = (compression_score < 0.6).astype(int)
+    consec_comp   = is_compressed.groupby((is_compressed != is_compressed.shift()).cumsum()).cumcount() + 1
+    consec_comp   = consec_comp * is_compressed
+    # Reduce exposure when vol compression is sustained ≥ 3 days (breakout imminent)
+    pos_breakout = pd.Series(1.0, index=idx)
+    pos_breakout[consec_comp >= 3] = 0.5
+    pos_breakout = pos_breakout.clip(min_position, max_position).shift(1).fillna(1.0)
+    trades_bo   = pos_breakout.diff().abs().fillna(0)
+    breakout_ret = pos_breakout * ret - trades_bo * tx_cost
+    all_results["Vol Breakout"] = compute_metrics(breakout_ret, "Vol Breakout")
+
+    # ── Strategy 7: Momentum + Vol Sizing ─────────────────────────────────────
+    # Combine price momentum with vol-adjusted sizing
+    mom_20d = ret.rolling(20).sum()           # 20-day cumulative return
+    mom_direction = np.sign(mom_20d)
+    max_pos_momentum = np.where(mom_direction >= 0, max_position, 0.75)
+    pos_mom  = (target_vol / pred_rv.replace(0, np.nan)) * np.abs(mom_direction)
+    pos_mom  = pd.Series(
+        np.clip(pos_mom, min_position, max_pos_momentum),
+        index=idx
+    ).shift(1).fillna(1.0)
+    trades_m = pos_mom.diff().abs().fillna(0)
+    mom_ret  = pos_mom * ret - trades_m * tx_cost
+    all_results["Momentum+Vol"] = compute_metrics(mom_ret, "Momentum+Vol")
+
+    # ── Strategy 8: Multi-Level Vol Targeting ────────────────────────────────
+    # Annualized pred vol: adapt target based on vol regime
+    ann_pred_vol = pred_rv * np.sqrt(365)
+    daily_target = pd.Series(target_vol, index=idx)
+    daily_target[ann_pred_vol < 0.30] = 0.03   # low vol: be more aggressive
+    daily_target[ann_pred_vol > 0.60] = 0.01   # high vol: be very defensive
+    pos_ml  = (daily_target / pred_rv.replace(0, np.nan)).clip(min_position, max_position)
+    pos_ml  = pos_ml.shift(1).fillna(1.0)
+    trades_ml = pos_ml.diff().abs().fillna(0)
+    ml_ret   = pos_ml * ret - trades_ml * tx_cost
+    all_results["Multi-Level Vol"] = compute_metrics(ml_ret, "Multi-Level Vol")
+
+    # Positions DataFrame
+    positions_df = pd.DataFrame({
+        "Inverse-Vol":    pos_iv,
+        "Regime Filter":  pos_rf,
+        "Combined":       pos_combo,
+        "Vol Carry":      vol_carry,
+        "Breakout":       pos_breakout,
+        "Momentum+Vol":   pos_mom,
+        "Multi-Level":    pos_ml,
+    }, index=idx)
+
+    return all_results, positions_df
+
+
+def plot_strategy_comparison(
+    results_dict: dict,
+    output_path: Path | None = None,
+) -> None:
+    """4-panel chart comparing all strategies."""
+    output_path = output_path or (RESULTS / "backtest_extended.png")
+    strategies  = [k for k in results_dict if k != "Buy & Hold"]
+    colors = [
+        "#e74c3c", "#3498db", "#2ecc71", "#f39c12",
+        "#9b59b6", "#1abc9c", "#e67e22", "#34495e"
+    ]
+
+    fig, axes = plt.subplots(2, 2, figsize=(18, 12))
+    fig.suptitle("Bitcoin Volatility Strategy Comparison — All 8 Strategies",
+                 fontsize=13, fontweight="bold")
+
+    # Panel 1: Cumulative returns
+    ax = axes[0, 0]
+    bh_cum = results_dict["Buy & Hold"]["cum_returns"]
+    ax.plot(bh_cum.index, bh_cum.values, color="gray", linewidth=0.9,
+            alpha=0.7, label="Buy & Hold")
+    for i, s in enumerate(strategies[:8]):
+        cum = results_dict[s]["cum_returns"]
+        ax.plot(cum.index, cum.values, color=colors[i % len(colors)],
+                linewidth=1.2, label=f"{s} (SR={results_dict[s]['sharpe']:.2f})")
+    ax.set_title("Cumulative Returns")
+    ax.legend(fontsize=7, ncol=2)
+    ax.grid(alpha=0.2)
+    ax.set_ylabel("Portfolio Value")
+
+    # Panel 2: Drawdown
+    ax2 = axes[0, 1]
+    for s in ["Buy & Hold"] + strategies[:4]:
+        cum = results_dict[s]["cum_returns"]
+        dd  = (cum - cum.cummax()) / cum.cummax()
+        c   = "gray" if s == "Buy & Hold" else colors[strategies.index(s) % len(colors)]
+        ax2.fill_between(dd.index, dd.values, 0, alpha=0.3, color=c, label=s)
+    ax2.set_title("Drawdown (Top 5 Strategies)")
+    ax2.legend(fontsize=8)
+    ax2.grid(alpha=0.2)
+    ax2.set_ylabel("Drawdown")
+
+    # Panel 3: Annual Sharpe bar chart
+    ax3 = axes[1, 0]
+    all_strats = ["Buy & Hold"] + strategies
+    sharpes    = [results_dict[s]["sharpe"] for s in all_strats]
+    bar_colors = ["gray"] + [colors[i % len(colors)] for i in range(len(strategies))]
+    ax3.barh(all_strats, sharpes, color=bar_colors, alpha=0.8)
+    ax3.axvline(0, color="black", linewidth=0.8)
+    ax3.set_title("Sharpe Ratio Comparison")
+    ax3.set_xlabel("Annualized Sharpe")
+    ax3.grid(alpha=0.2, axis="x")
+
+    # Panel 4: Max Drawdown vs Sharpe scatter
+    ax4 = axes[1, 1]
+    for i, s in enumerate(all_strats):
+        c = "gray" if s == "Buy & Hold" else colors[i % len(colors)]
+        ax4.scatter(results_dict[s]["max_dd"] * 100, results_dict[s]["sharpe"],
+                    color=c, s=80, alpha=0.8, label=s)
+        ax4.annotate(s[:12], (results_dict[s]["max_dd"] * 100, results_dict[s]["sharpe"]),
+                     fontsize=7, xytext=(3, 3), textcoords="offset points")
+    ax4.set_xlabel("Max Drawdown (%)")
+    ax4.set_ylabel("Sharpe Ratio")
+    ax4.set_title("Risk-Return Scatter")
+    ax4.grid(alpha=0.2)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    print(f"  Saved → {Path(output_path).name}")
+    plt.close()
+
+
+def compare_strategy_by_year(
+    btc_returns: pd.Series,
+    predicted_log_rv: pd.Series,
+) -> pd.DataFrame:
+    """Annual Sharpe and return for the best strategies."""
+    idx  = btc_returns.index.intersection(predicted_log_rv.index)
+    ret  = btc_returns.loc[idx]
+    pred = predicted_log_rv.loc[idx]
+    years = sorted(ret.index.year.unique())
+    rows  = []
+
+    for year in years:
+        mask   = ret.index.year == year
+        yr_ret = ret[mask]
+        yr_pred = pred[mask]
+        if len(yr_ret) < 30:
+            continue
+        results, _ = run_extended_backtest(yr_ret, yr_pred)
+        for s_name in ["Buy & Hold", "Combined Strategy", "Multi-Level Vol"]:
+            if s_name in results:
+                m = results[s_name]
+                rows.append({
+                    "year":     year,
+                    "strategy": s_name,
+                    "sharpe":   round(m["sharpe"], 3),
+                    "ann_ret":  round(m["ann_ret"], 4),
+                    "max_dd":   round(m["max_dd"], 4),
+                })
+
+    return pd.DataFrame(rows)

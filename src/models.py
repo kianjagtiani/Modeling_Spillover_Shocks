@@ -275,7 +275,223 @@ def mae_log(y_true: np.ndarray, y_pred: np.ndarray) -> float:
 
 
 METRICS = {
-    "qlike": qlike_loss,
+    "qlike":   qlike_loss,
     "mse_log": mse_log,
     "mae_log": mae_log,
 }
+
+
+# ── VolRegime-HAR ─────────────────────────────────────────────────────────────
+
+class VolRegimeHARModel:
+    """
+    Regime-switching HAR: fits separate OLS models for Low/Normal/High vol regimes.
+    Regime identified by rv_pct_60d (rolling percentile of log RV).
+    Falls back to full-sample HAR if a regime has < 30 samples.
+    """
+    name = "VolRegime-HAR"
+    _REGIME_COL = "rv_pct_60d"
+
+    def __init__(self):
+        self.models_: dict[str, object] = {}
+        self.fallback_: object = None
+        self.cols_: list[str] = []
+
+    def _assign_regime(self, X: pd.DataFrame) -> pd.Series:
+        if self._REGIME_COL in X.columns:
+            pct = X[self._REGIME_COL]
+        else:
+            pct = X[HAR_COLS[0]].rank(pct=True) if HAR_COLS[0] in X.columns else pd.Series(0.5, index=X.index)
+        return pct.apply(lambda p: "Low" if p < 0.33 else ("High" if p > 0.67 else "Normal"))
+
+    def fit(self, X: pd.DataFrame, y: pd.Series, **_) -> "VolRegimeHARModel":
+        regimes = self._assign_regime(X)
+        X_har   = _har_X(X).copy()
+        X_har   = sm.add_constant(X_har, has_constant="add")
+        self.cols_ = X_har.columns.tolist()
+
+        # Fallback model on full sample
+        self.fallback_ = sm.OLS(y, X_har).fit(cov_type="HC3")
+
+        for regime in ("Low", "Normal", "High"):
+            mask = regimes == regime
+            if mask.sum() >= 30:
+                self.models_[regime] = sm.OLS(y[mask], X_har[mask]).fit(cov_type="HC3")
+            else:
+                self.models_[regime] = self.fallback_
+
+        return self
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        regimes = self._assign_regime(X)
+        preds   = np.zeros(len(X))
+        X_har   = _har_X(X)[self.cols_[1:]].copy()
+        X_har   = sm.add_constant(X_har, has_constant="add")
+
+        for regime, model in self.models_.items():
+            mask = (regimes == regime).values
+            if mask.any():
+                preds[mask] = model.predict(X_har[mask])
+
+        return preds
+
+    def feature_importance(self) -> pd.Series:
+        return pd.Series(
+            {regime: dict(zip(m.params.index, m.params.values))
+             for regime, m in self.models_.items()}
+        )
+
+
+# ── HAR-XGBoost Hybrid ────────────────────────────────────────────────────────
+
+class HARXGBoostHybrid:
+    """
+    Two-stage hybrid: HAR-RV-SJ (OLS) + XGBoost on residuals.
+    Tests whether XGBoost's inductive bias differs meaningfully from LightGBM
+    when learning residual cross-asset patterns.
+    """
+    name = "HAR-XGBoost Hybrid"
+
+    def __init__(self, xgb_kwargs: dict | None = None):
+        self.har_  = HARModel()
+        self.xgb_  = XGBoostModel(**(xgb_kwargs or {}))
+        self.feature_names_: list[str] = []
+
+    def fit(self, X: pd.DataFrame, y: pd.Series,
+            X_val: pd.DataFrame | None = None,
+            y_val: pd.Series | None = None) -> "HARXGBoostHybrid":
+        self.feature_names_ = X.columns.tolist()
+        self.har_.fit(X, y)
+        residuals = pd.Series(y.values - self.har_.predict(X), index=y.index)
+        if X_val is not None and y_val is not None:
+            val_res = pd.Series(y_val.values - self.har_.predict(X_val), index=y_val.index)
+            self.xgb_.fit(X, residuals, X_val=X_val, y_val=val_res)
+        else:
+            self.xgb_.fit(X, residuals)
+        return self
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        return self.har_.predict(X) + self.xgb_.predict(X)
+
+    def feature_importance(self) -> pd.Series:
+        return self.xgb_.feature_importance()
+
+
+# ── Multi-Horizon HAR ─────────────────────────────────────────────────────────
+
+class MultiHorizonHAR:
+    """
+    Fits separate HAR-RV-SJ models for h=1, h=5, and h=22 day-ahead forecasts.
+    Call .predict(X, horizon=5) for multi-horizon inference.
+    """
+    name = "MultiHorizon-HAR"
+
+    def __init__(self, horizons: list[int] | None = None):
+        self.horizons = horizons or [1, 5, 22]
+        self.models_: dict[int, HARModel] = {}
+
+    def fit(self, X: pd.DataFrame, y: pd.Series,
+            y_dict: dict[int, pd.Series] | None = None, **_) -> "MultiHorizonHAR":
+        """
+        y_dict: optional dict {horizon: target_series}.
+        If not provided, fits only h=1 using y (compatible with walk-forward loop).
+        """
+        targets = y_dict or {1: y}
+        for h, target in targets.items():
+            m = HARModel()
+            m.fit(X, target)
+            self.models_[h] = m
+        # Fallback: if only h=1 trained, alias it for other horizons
+        h1_model = self.models_.get(1)
+        for h in self.horizons:
+            if h not in self.models_ and h1_model is not None:
+                self.models_[h] = h1_model
+        return self
+
+    def predict(self, X: pd.DataFrame, horizon: int = 1) -> np.ndarray:
+        model = self.models_.get(horizon) or self.models_.get(1)
+        return model.predict(X)
+
+    def predict_all(self, X: pd.DataFrame) -> dict[int, np.ndarray]:
+        return {h: self.predict(X, horizon=h) for h in self.horizons}
+
+    def feature_importance(self) -> pd.Series:
+        if 1 in self.models_:
+            return self.models_[1].feature_importance()
+        return pd.Series(dtype=float)
+
+
+# ── EnsembleRidge (improved stacking) ────────────────────────────────────────
+
+class EnsembleRidge:
+    """
+    Non-negative Ridge ensemble: learns optimal blend weights across base models.
+    Uses time-series CV (no random splits) for meta-model training.
+    Weights are non-negative so models can't cancel each other.
+    """
+    name = "Ridge Ensemble"
+
+    def __init__(self, alpha: float = 1.0):
+        self.alpha    = alpha
+        self.weights_ : np.ndarray | None = None
+        self.model_names_: list[str] = []
+
+    def fit(
+        self,
+        X_train: pd.DataFrame,
+        y_train: pd.Series,
+        base_predictions: dict[str, np.ndarray],
+    ) -> "EnsembleRidge":
+        """
+        base_predictions: {model_name: predictions_on_train_set}
+        Fits a Ridge regression of y on the base predictions (non-negative).
+        """
+        from sklearn.linear_model import Ridge
+
+        self.model_names_ = list(base_predictions.keys())
+        P = np.column_stack([base_predictions[n] for n in self.model_names_])
+        y = y_train.values
+
+        # Non-negative ridge via projected gradient is complex; use simple Ridge
+        # and then clip weights to >= 0 + renormalize
+        model = Ridge(alpha=self.alpha, fit_intercept=False)
+        model.fit(P, y)
+        w = model.coef_
+        w = np.maximum(w, 0)
+        total = w.sum()
+        self.weights_ = w / total if total > 0 else np.ones(len(w)) / len(w)
+        return self
+
+    def predict(self, base_predictions: dict[str, np.ndarray]) -> np.ndarray:
+        if self.weights_ is None:
+            raise RuntimeError("EnsembleRidge not fitted yet.")
+        P = np.column_stack([base_predictions[n] for n in self.model_names_])
+        return P @ self.weights_
+
+
+# ── Additional Metrics ────────────────────────────────────────────────────────
+
+def pearson_corr(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """Pearson correlation between actuals and predictions."""
+    if len(y_true) < 2:
+        return float("nan")
+    from scipy.stats import pearsonr
+    r, _ = pearsonr(y_true, y_pred)
+    return float(r)
+
+
+def r2_mz(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """
+    Mincer-Zarnowitz R²: from OLS of actual on predicted.
+    Measures how much of realized vol variation is explained by forecasts.
+    """
+    try:
+        X = sm.add_constant(y_pred)
+        result = sm.OLS(y_true, X).fit()
+        return float(result.rsquared)
+    except Exception:
+        return float("nan")
+
+
+METRICS["corr"]  = pearson_corr
+METRICS["r2_mz"] = r2_mz

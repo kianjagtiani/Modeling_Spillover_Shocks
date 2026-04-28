@@ -1,0 +1,17 @@
+BTC Volatility Lead-Lag Analysis
+Data: 2021-01-23 → 2026-04-28  (1,922 days)
+====================================================================
+
+Granger causality: 3 significant predictors (p<0.05)
+
+Top 10 Granger-causal features:
+  sol_vol_5d                   lag= 6  p=0.0006
+  eth_vol_5d                   lag= 2  p=0.0051
+  bnb_vol_5d                   lag= 6  p=0.0350
+  eth_ret_1d                   lag= 8  p=0.0407
+  bnb_ret_1d                   lag= 8  p=0.0584
+  fg_lag1                      lag= 6  p=0.0686
+  btc_eth_corr_10d             lag= 1  p=0.0797
+  sol_ret_1d                   lag= 2  p=0.1391
+  fg_7d_chg                    lag= 7  p=0.1503
+  fg_extreme_greed             lag= 2  p=0.1612

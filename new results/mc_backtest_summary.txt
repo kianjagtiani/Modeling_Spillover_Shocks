@@ -1,0 +1,34 @@
+Monte Carlo Backtest Summary
+Model: HAR-LGBM Hybrid | Trials: 200 | Bootstrap: 500 | Paths: 300 | Permutations: 500
+=================================================================
+
+OPTIMIZATION RESULTS
+  Default OOS Sharpe : -0.251
+  Best OOS Sharpe    : 0.030
+  IS → OOS gap       : 0.713
+
+BOOTSTRAP CI (best config, 95% CI, block-bootstraps)
+  Metric           Median                95% CI    P(>0)    p-value
+  ---------------------------------------------------------------
+  sharpe            0.400  [-0.596,  1.665]   74.6%    0.4780 (n.s.)
+  total_ret         0.491  [-0.498,  3.343]   74.6%    0.5260 (n.s.)
+  ann_ret           0.100  [-0.152,  0.419]   74.6%    0.4780 (n.s.)
+  max_dd           -0.374  [-0.646, -0.223]    0.0%    0.0060 ***
+  sortino           0.562  [-0.782,  2.495]   74.6%    0.4880 (n.s.)
+
+HYPOTHESIS TESTS
+  [1] Permutation test (H₀: vol-timing = random)
+      p-value : 0.0020  ***
+  [2] Newey-West t-test (H₀: mean strategy return = 0)
+      t-stat  : 1.1276
+      p-value : 0.2597  (n.s.)
+  [3] Newey-West t-test (H₀: strategy return = buy-and-hold)
+      t-stat  : -0.0051
+      p-value : 0.9959  (n.s.)
+  * p<0.10  ** p<0.05  *** p<0.01
+
+PATH SIMULATION (252-day forward horizon)
+  Sharpe : median=-0.211  [-1.671, 2.365]
+  P(beats Buy&Hold Sharpe) : 46.0%
+  P(total_ret > 0)         : 43.3%
+  Max DD reduction vs B&H  : 100% of paths

@@ -1,0 +1,18 @@
+Monte Carlo Backtest Summary
+Model: HAR-LGBM Hybrid | Trials: 200 | Bootstrap: 500 | Paths: 300
+=================================================================
+
+OPTIMIZATION RESULTS
+  Default OOS Sharpe:     -0.251
+  Best OOS Sharpe:        0.030
+  IS → OOS gap:           0.713
+
+BOOTSTRAP CI (best config, 95% CI, 1000 block-bootstraps)
+  sharpe         median=0.400  [-0.596, 1.665]  P(>0)=74.6%
+  total_ret      median=0.491  [-0.498, 3.343]  P(>0)=74.6%
+  max_dd         median=-0.374  [-0.646, -0.223]  P(>0)=0.0%
+
+PATH SIMULATION (252-day forward horizon)
+  Sharpe: median=-0.211  [-1.671, 2.365]
+  P(beats Buy&Hold Sharpe): 46.0%
+  P(total_ret > 0): 43.3%

@@ -48,6 +48,9 @@ def run_pipeline(
     embargo: int = 5,
     skip_ingest: bool = False,
     verbose: bool = True,
+    features_path: Path | None = None,
+    model_filter: list[str] | None = None,
+    skip_backtest: bool = False,
 ) -> pd.DataFrame:
 
     # ── 1. Ingest ──────────────────────────────────────────────────────────────
@@ -57,10 +60,11 @@ def run_pipeline(
         print("Skipping ingestion (--skip-ingest)")
 
     # ── 2. Features ────────────────────────────────────────────────────────────
-    features_path = PROCESSED_DIR / "features.parquet"
-    if features_path.exists() and skip_ingest:
-        print("Loading cached feature matrix...")
-        df = pd.read_parquet(features_path)
+    default_features_path = PROCESSED_DIR / "features.parquet"
+    _feat_path = features_path or default_features_path
+    if _feat_path.exists() and (skip_ingest or features_path is not None):
+        print(f"Loading feature matrix from {_feat_path.name}...")
+        df = pd.read_parquet(_feat_path)
         df.index = pd.to_datetime(df.index, utc=True)
     else:
         df = build_feature_matrix(start=start)
@@ -88,16 +92,16 @@ def run_pipeline(
         print(f"Total walk-forward splits: {len(splits)}\n")
 
     # ── 4. Models ──────────────────────────────────────────────────────────────
-    tuned_model = HARLGBMTuned(n_trials=60)  # shared instance so tuning happens once
+    tuned_model = HARLGBMTuned(n_trials=60)
 
     base_factories = {
-        "HAR-RV-SJ": lambda: HARModel(),
-        "HAR-Lasso": lambda: HARLassoModel(),
-        "LightGBM":  lambda: LGBMModel(),
+        "HAR-RV-SJ":       lambda: HARModel(),
+        "HAR-Lasso":       lambda: HARLassoModel(),
+        "LightGBM":        lambda: LGBMModel(),
         "HAR-LGBM Hybrid": lambda: HARLGBMHybrid(),
     }
 
-    model_factories = {
+    all_model_factories = {
         "HAR-RV-SJ":         lambda: HARModel(),
         "HAR-Lasso":         lambda: HARLassoModel(),
         "XGBoost":           lambda: XGBoostModel(),
@@ -109,6 +113,15 @@ def run_pipeline(
                                                     num_layers=2, max_epochs=80,
                                                     patience=10),
     }
+
+    # Apply model filter if specified
+    if model_filter:
+        model_factories = {k: v for k, v in all_model_factories.items() if k in model_filter}
+        if not model_factories:
+            print(f"WARNING: none of the specified models ({model_filter}) are valid. Running all.")
+            model_factories = all_model_factories
+    else:
+        model_factories = all_model_factories
 
     all_results = []
     for model_name, factory in model_factories.items():
@@ -171,7 +184,36 @@ def main():
     parser.add_argument("--embargo", type=int, default=5, help="Embargo days between train/test")
     parser.add_argument("--skip-ingest", action="store_true", help="Skip data download")
     parser.add_argument("--quiet", action="store_true", help="Less verbose output")
+    # New arguments for expanded pipeline
+    parser.add_argument(
+        "--features-path",
+        default=None,
+        help="Override default features.parquet path. Use data/processed/features_broad.parquet "
+             "or features_seasonality.parquet for expanded asset coverage.",
+    )
+    parser.add_argument(
+        "--models",
+        default="all",
+        help="Comma-separated list of models to run, or 'all'. "
+             "Options: HAR-RV-SJ, HAR-Lasso, XGBoost, LightGBM, HAR-LGBM Hybrid, "
+             "HAR-LGBM Tuned, Stacking Ensemble, HAR-LSTM Hybrid",
+    )
+    parser.add_argument(
+        "--skip-backtest",
+        action="store_true",
+        help="Skip the backtest step after model evaluation (faster for experiments).",
+    )
     args = parser.parse_args()
+
+    # Parse features path
+    features_path = Path(args.features_path) if args.features_path else None
+    if features_path and not features_path.is_absolute():
+        features_path = (Path(__file__).parent.parent / features_path).resolve()
+
+    # Parse model filter
+    model_filter = None if args.models.lower() == "all" else [
+        m.strip() for m in args.models.split(",")
+    ]
 
     run_pipeline(
         start=args.start,
@@ -181,6 +223,9 @@ def main():
         embargo=args.embargo,
         skip_ingest=args.skip_ingest,
         verbose=not args.quiet,
+        features_path=features_path,
+        model_filter=model_filter,
+        skip_backtest=args.skip_backtest,
     )
 
 

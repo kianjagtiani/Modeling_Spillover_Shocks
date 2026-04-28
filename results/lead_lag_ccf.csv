@@ -1,0 +1,16 @@
+feature,peak_lag,peak_corr,p_value,direction,significant
+vix_level,-1,0.2641,0.0,log_rv leads vix_level by 1 day(s),True
+log_vix,-1,0.2693,0.0,log_rv leads log_vix by 1 day(s),True
+vix_5d_chg,-1,0.126,0.0,log_rv leads vix_5d_chg by 1 day(s),True
+sp500_ret_1d,5,-0.0797,0.0005,sp500_ret_1d leads log_rv by 5 day(s),True
+sp500_vol_5d,-4,0.1596,0.0,log_rv leads sp500_vol_5d by 4 day(s),True
+sp500_vol_22d,-12,0.0969,0.0,log_rv leads sp500_vol_22d by 12 day(s),True
+gold_ret_1d,-1,-0.0297,0.1931,log_rv leads gold_ret_1d by 1 day(s),False
+gold_vol_5d,-1,0.0794,0.0005,log_rv leads gold_vol_5d by 1 day(s),True
+dxy_ret_1d,-15,0.0453,0.048,log_rv leads dxy_ret_1d by 15 day(s),True
+dxy_vol_5d,-13,-0.0879,0.0001,log_rv leads dxy_vol_5d by 13 day(s),True
+tnx_level,-13,-0.4498,0.0,log_rv leads tnx_level by 13 day(s),True
+tnx_5d_chg,-3,-0.0768,0.0008,log_rv leads tnx_5d_chg by 3 day(s),True
+eth_ret_1d,-1,-0.098,0.0,log_rv leads eth_ret_1d by 1 day(s),True
+eth_vol_5d,-2,0.5625,0.0,log_rv leads eth_vol_5d by 2 day(s),True
+sol_ret_1d,-1,-0.0419,0.0663,log_rv leads sol_ret_1d by 1 day(s),False

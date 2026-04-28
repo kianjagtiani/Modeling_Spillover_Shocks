@@ -11,5 +11,10 @@ tqdm>=4.66
 matplotlib>=3.7
 seaborn>=0.13
 pyarrow>=13.0
+fastparquet>=2023.0
+yfinance>=0.2.36
+optuna>=3.3
+torch>=2.1
+python-pptx>=0.6.21
 # Optional: for SHAP analysis
 # shap>=0.44
