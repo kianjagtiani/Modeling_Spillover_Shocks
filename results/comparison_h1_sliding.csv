@@ -1,0 +1,3 @@
+model,qlike,mse_log,mae_log,corr,r2_mz,dm_p,beats_baseline
+HAR-RV-SJ,0.067754,0.308772,0.262167,0.490911,0.240994,,—
+HAR-LGBM Hybrid,0.05456,0.283091,0.232774,0.553934,0.306843,4.6210752425211474e-14,yes*
