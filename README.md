@@ -30,8 +30,7 @@ lands at OOS Sharpe -0.25 (default) to 0.03 (best config), with an in-sample-to-
 Sharpe gap of 0.71 that our own summary flags as overfitting. The permutation test says
 the vol-timing signal is non-random (p = 0.002), but Newey-West tests can't distinguish
 strategy returns from zero (p = 0.26) or from buy-and-hold (p = 0.996). The one robust
-benefit: max drawdown improves on buy-and-hold in 100% of simulated forward paths. Good
-forecasts, no alpha — the honest headline.
+benefit: max drawdown improves on buy-and-hold in 100% of simulated forward paths. Overall, good forecasts but unfortunately, no alpha.
 
 ## Conclusion and next steps
 
@@ -39,9 +38,8 @@ Volatility forecasting works; monetizing it through spot position sizing doesn't
 sizing captures none of the vol premium. The forecast quality points somewhere else:
 
 - Options. `src/options_strategy.py` sketches the Deribit volatility-risk-premium trade
-  (IV typically 10–20% over realized). That is where a good RV forecast earns, and it
-  needs real options data next.
-- The SOL→BTC lead deserves its own study; six days of lead time is a lot.
+  (IV typically 10–20% over realized). That is where a good RV forecast earns, needs options data next.
+- The SOL→BTC lead deserves attentino; six days of lead time is a lot.
 - The δ-gap overfitting warning means any deployed config needs nested walk-forward, not
   a single grid search.
 
@@ -50,13 +48,12 @@ sizing captures none of the vol premium. The forecast quality points somewhere e
 - `src/`: the pipeline. Data ingestion, HAR + spillover features, LGBM/XGBoost/LSTM/
   stacking models, walk-forward validation, lead-lag analysis, Monte Carlo backtest with
   permutation and Newey-West tests, options-strategy simulation.
-- `btc_volatility_research.ipynb`: the executed end-to-end notebook. `strats.ipynb`:
-  15 candidate vol strategies with citations.
+- `btc_volatility_research.ipynb`: executed notebook. `strats.ipynb`:
+  15 candidate vol strategies.
 - `results/`, `new results/`: forecasts (parquet), scores, statistical summaries, all
-  figures, and the presentation.
-- `Calendar Effects/`, `code.py`, `code1.py`: the earlier GARCH calendar-effects and
-  spillover-alpha experiments this grew out of.
-- Prices come from public APIs (see `src/data_ingestion.py`); no keys required.
+  figures, and rough presentation.
+- `Calendar Effects/`, `code.py`, `code1.py`: initial EDA (GARCH calendar-effects and
+  spillover-alpha experiments.)
 
 ## References
 
